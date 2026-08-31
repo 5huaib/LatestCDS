@@ -1,0 +1,26 @@
+# Python environment
+venv/
+env/
+ENV/
+.venv/
+__pycache__/
+*.pyc
+
+# Video files (Inputs & Outputs)
+*.mp4
+*.MOV
+*.mov
+*.avi
+*.mkv
+*.webm
+
+# Model weights
+*.pt
+*.pth
+*.onnx
+*.engine
+
+# System & IDE files
+.DS_Store
+.vscode/
+.idea/
