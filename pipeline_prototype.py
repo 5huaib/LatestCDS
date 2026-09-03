@@ -22,7 +22,7 @@ class CrimeDetector3D(nn.Module):
     Uses ResNet3D-18 as a backbone, removes the original fc layer,
     and appends: FC (1024) -> ReLU -> Dropout(0.5) -> FC (512) -> ReLU -> Dropout(0.5) -> FC (1) -> Sigmoid.
     """
-    def __init__(self, use_pretrained=True):
+    def __init__(self, use_pretrained=True, weights_path=None):
         super().__init__()
         print("Initializing 3D-CNN backbone (ResNet3D-18)...")
         
@@ -60,6 +60,15 @@ class CrimeDetector3D(nn.Module):
             nn.Linear(512, 1),
             nn.Sigmoid()
         )
+
+        if weights_path and os.path.exists(weights_path):
+            print(f"Loading custom fine-tuned weights from '{weights_path}'...")
+            checkpoint = torch.load(weights_path, map_location='cpu')
+            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                self.load_state_dict(checkpoint['model_state_dict'])
+            else:
+                self.load_state_dict(checkpoint)
+            print("Successfully loaded fine-tuned model weights.")
 
     def forward(self, x):
         # x shape: (batch_size, channels, time, height, width) -> e.g. (1, 3, 16, 112, 112)
@@ -130,6 +139,9 @@ def main():
     parser.add_argument("--yolo-model", type=str, default="yolov8n.pt", help="YOLOv8 weights file (default: yolov8n.pt).")
     parser.add_argument("--eval-interval", type=int, default=16, help="3D-CNN evaluation interval in frames (default: 16).")
     parser.add_argument("--max-frames", type=int, default=0, help="Maximum number of frames to process. 0 means process the whole video.")
+    parser.add_argument("--weights", type=str, default="", help="Path to fine-tuned weights file (e.g., best_crime_detector.pth).")
+    parser.add_argument("--frame-stride", type=int, default=2, help="Sampling stride between frames stored in temporal buffer (default: 2).")
+    parser.add_argument("--threshold", type=float, default=0.2, help="Threat score threshold to trigger SUSPICIOUS alert (default: 0.2).")
     args = parser.parse_args()
 
     # Determine hardware device
@@ -177,7 +189,8 @@ def main():
     tracker = DeepSort(max_age=30, n_init=3, nms_max_overlap=1.0, max_cosine_distance=0.3)
 
     # Initialize custom 3D-CNN Anomaly Detector
-    classifier = CrimeDetector3D(use_pretrained=True).to(device)
+    weights_path = args.weights if args.weights else None
+    classifier = CrimeDetector3D(use_pretrained=True, weights_path=weights_path).to(device)
     classifier.eval()
 
     # Sliding window queue for temporal features per track ID
@@ -274,19 +287,21 @@ def main():
                     # Apply ImageNet normalization
                     crop_tensor = (crop_tensor - mean) / std
                     
-                    # Store crop in track buffer
+                    # Store crop in track buffer with frame-stride sampling
                     if track_id not in track_buffers:
                         track_buffers[track_id] = collections.deque(maxlen=16)
                         track_frame_counts[track_id] = 0
-                    track_buffers[track_id].append(crop_tensor)
+                    
                     track_frame_counts[track_id] += 1
+                    if track_frame_counts[track_id] % args.frame_stride == 0:
+                        track_buffers[track_id].append(crop_tensor)
                     
                     buffer_len = len(track_buffers[track_id])
                     buffer_status = f"{buffer_len}/16"
                     
                     # 6. Run 3D-CNN evaluation once 16 frames are accumulated, and then every eval-interval
                     if buffer_len == 16:
-                        if (track_frame_counts[track_id] >= 16) and ((track_frame_counts[track_id] - 16) % args.eval_interval == 0):
+                        if ((track_frame_counts[track_id] // args.frame_stride) >= 16) and (((track_frame_counts[track_id] // args.frame_stride) - 16) % args.eval_interval == 0):
                             # Stack elements along time dimension (dim=1) to create shape (C, T, H, W)
                             sequence = torch.stack(list(track_buffers[track_id]), dim=1)
                             # Add Batch dimension -> (1, C, T, H, W)
@@ -301,12 +316,12 @@ def main():
                             threat_score = track_threat_scores.get(track_id, None)
                 
                 # 7. Visualization on frame
-                # Green for normal, red for suspicious (threat_score >= 0.5)
+                # Green for normal, red for suspicious (threat_score >= threshold)
                 color = (0, 255, 0)
                 label = f"ID: {track_id} | Buffering: {buffer_status}"
                 
                 if threat_score is not None:
-                    is_suspicious = threat_score >= 0.5
+                    is_suspicious = threat_score >= args.threshold
                     color = (0, 0, 255) if is_suspicious else (0, 255, 0)
                     status_text = "SUSPICIOUS" if is_suspicious else "Normal"
                     label = f"ID: {track_id} | {status_text}: {threat_score:.4f}"
