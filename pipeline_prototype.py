@@ -189,7 +189,12 @@ def main():
     tracker = DeepSort(max_age=30, n_init=3, nms_max_overlap=1.0, max_cosine_distance=0.3)
 
     # Initialize custom 3D-CNN Anomaly Detector
-    weights_path = args.weights if args.weights else None
+    weights_path = args.weights
+    if not weights_path:
+        for candidate in ["weights/best_crime_detector.pth", "best_crime_detector.pth"]:
+            if os.path.exists(candidate):
+                weights_path = candidate
+                break
     classifier = CrimeDetector3D(use_pretrained=True, weights_path=weights_path).to(device)
     classifier.eval()
 
